@@ -1,69 +1,44 @@
 package dao
 
 import (
-	"context"
-	"time"
-
-	"goTraining/Week04/internal/model"
-	"github.com/go-kratos/kratos/pkg/cache/memcache"
-	"github.com/go-kratos/kratos/pkg/cache/redis"
-	"github.com/go-kratos/kratos/pkg/conf/paladin"
-	"github.com/go-kratos/kratos/pkg/database/sql"
-	"github.com/go-kratos/kratos/pkg/sync/pipeline/fanout"
-	xtime "github.com/go-kratos/kratos/pkg/time"
-
-	"github.com/google/wire"
+	"database/sql"
+	
+	xerrors "github.com/pkg/errors"
 )
 
-var Provider = wire.NewSet(New, NewDB, NewRedis, NewMC)
-
-//go:generate kratos tool genbts
-// Dao dao interface
-type Dao interface {
-	Close()
-	Ping(ctx context.Context) (err error)
-	// bts: -nullcache=&model.Article{ID:-1} -check_null_code=$!=nil&&$.ID==-1
-	Article(c context.Context, id int64) (*model.Article, error)
+type Repo interface {
+	SaveInfo(s string) error
+	GetInfo(s string) (string, error)
 }
 
-// dao dao.
-type dao struct {
-	db          *sql.DB
-	redis       *redis.Redis
-	mc          *memcache.Memcache
-	cache *fanout.Fanout
-	demoExpire int32
+type repo struct {
+	db *sql.DB
 }
 
-// New new a dao and return.
-func New(r *redis.Redis, mc *memcache.Memcache, db *sql.DB) (d Dao, cf func(), err error) {
-	return newDao(r, mc, db)
+var _ Repo = (*repo)(nil)
+
+func NewRepo(db *sql.DB) Repo {
+	return &repo{db: db}
 }
 
-func newDao(r *redis.Redis, mc *memcache.Memcache, db *sql.DB) (d *dao, cf func(), err error) {
-	var cfg struct{
-		DemoExpire xtime.Duration
+func (r *repo) SaveInfo(info string) error {
+	_, err := r.db.Query("insert into message(info) values (?)", info)
+	return xerrors.Wrapf(err, "failed insert")
+}
+
+func (r *repo) GetInfo(topic string) (string, error) {
+	var info string
+	rows, err := r.db.Query("select info from message where topic = ?", topic)
+	if err != nil {
+		return "", xerrors.Wrapf(err, "failed select")
 	}
-	if err = paladin.Get("application.toml").UnmarshalTOML(&cfg); err != nil {
-		return
+	defer rows.Close()
+	
+	for rows.Next() {
+		if err := rows.Scan(&info); err != nil {
+			return "", xerrors.Wrapf(err, "failed scanning")
+		}
 	}
-	d = &dao{
-		db: db,
-		redis: r,
-		mc: mc,
-		cache: fanout.New("cache"),
-		demoExpire: int32(time.Duration(cfg.DemoExpire) / time.Second),
-	}
-	cf = d.Close
-	return
-}
-
-// Close close the resource.
-func (d *dao) Close() {
-	d.cache.Close()
-}
-
-// Ping ping the resource.
-func (d *dao) Ping(ctx context.Context) (err error) {
-	return nil
+	
+	return info, nil
 }
